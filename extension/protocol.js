@@ -38,6 +38,7 @@ export function validateCommand(input) {
     parseOrigin(out.url);
   }
   if (out.action === "get_html" && input.selector !== undefined) out.selector = string("selector", 500);
+  if (out.action === "get_page" && input.cursor !== undefined) out.cursor = string("cursor", 200);
   return out;
 }
 
