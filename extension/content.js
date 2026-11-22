@@ -13,7 +13,7 @@
   }
   const sensitive = /pass(word|wd)?|secret|token|csrf|cookie|authorization|api[-_]?key|credential|session|otp|one.time|парол|секрет/i;
   const ignored = "script,style,noscript,template,iframe,object,embed,meta,link";
-  const controlSelector = "button,a[href],input,textarea,select,summary,[role=button],[role=link],[onclick],[data-toggle],[data-bs-toggle],[contenteditable=true]";
+  const controlSelector = "button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=combobox],[role=option],[role=treeitem],[onclick],[data-toggle],[data-bs-toggle],[contenteditable=true]";
   const short = (value, max = 300) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
   const secretField = (el) => el.matches?.("input[type=password],input[type=hidden],input[type=file]") ||
     sensitive.test(["name", "id", "autocomplete", "aria-label", "placeholder", "type"].map((key) => el.getAttribute(key) || "").join(" ")) ||
@@ -59,13 +59,20 @@
     }
     const classes = (el.getAttribute("class") || "").split(/\s+/).filter(identifier).slice(0, 20);
     if (classes.length) attrs.class = classes.join(" ");
-    for (const name of ["aria-controls", "aria-labelledby", "aria-describedby"]) {
+    for (const name of ["aria-controls", "aria-labelledby", "aria-describedby", "aria-activedescendant"]) {
       const value = el.getAttribute(name);
       if (value && value.length <= 240 && value.split(/\s+/).every(identifier)) attrs[name] = value;
     }
-    for (const name of ["aria-expanded", "aria-pressed", "aria-selected", "aria-checked", "aria-disabled", "aria-hidden"]) {
+    for (const name of ["aria-expanded", "aria-pressed", "aria-selected", "aria-checked", "aria-disabled", "aria-hidden", "aria-multiselectable"]) {
       const value = el.getAttribute(name);
       if (["true", "false", "mixed"].includes(value)) attrs[name] = value;
+    }
+    for (const [name, allowed] of [
+      ["aria-haspopup", ["true", "false", "listbox", "tree", "menu", "grid", "dialog"]],
+      ["aria-autocomplete", ["none", "inline", "list", "both"]]
+    ]) {
+      const value = el.getAttribute(name);
+      if (allowed.includes(value)) attrs[name] = value;
     }
     for (const name of ["data-toggle", "data-bs-toggle"]) {
       const value = el.getAttribute(name);
@@ -166,7 +173,7 @@
       if (!visible(el) || secretField(el)) continue;
       if (controls.length >= 10000) { sourceTruncated = true; break; }
       const id = `e${controls.length + 1}`;
-      const item = { id, tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", label: label(el), disabled: !!el.disabled };
+      const item = { id, tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", label: label(el), disabled: !!el.disabled || !!el.closest('[aria-disabled="true"]') };
       item.attributes = safeAttributes(el);
       if (el.hasAttribute("onclick")) item.hasClickHandler = true;
       if (el.matches("input,textarea,select")) {
@@ -246,8 +253,24 @@
     if (!el?.isConnected || !visible(el) || secretField(el) || fingerprint(el) !== fingerprints.get(command.element)) {
       throw new Error("Элемент изменился. Запросите get_page.");
     }
-    if (el.disabled || el.readOnly || el.getAttribute("aria-disabled") === "true") throw new Error("Элемент недоступен.");
+    if (el.disabled || el.readOnly || el.closest('[aria-disabled="true"]')) throw new Error("Элемент недоступен.");
     return el;
+  }
+
+  function clickElement(el) {
+    // Select2 toggles on mousedown and selects results on mouseup, not click.
+    // Use a fixed mouse sequence only for its visible ARIA controls.
+    if (el.matches(".select2-selection[role=combobox],.select2-results__option[role=option],.select2-results__option[role=treeitem]")) {
+      for (const [type, buttons] of [["mousedown", 1], ["mouseup", 0]]) {
+        if (!el.isConnected || !visible(el) || el.disabled || el.closest('[aria-disabled="true"]')) return;
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0, buttons });
+        // jQuery/Select2 versions check the legacy left-button property.
+        Object.defineProperty(event, "which", { value: 1 });
+        el.dispatchEvent(event);
+      }
+    }
+    // A Select2 mouseup can remove its result list. Never act on a replacement.
+    if (el.isConnected && visible(el) && !el.disabled && !el.closest('[aria-disabled="true"]')) el.click();
   }
 
   function execute(command) {
@@ -267,7 +290,7 @@
           throw new Error("Переход по этой ссылке запрещён. Используйте navigate внутри разрешённого сайта.");
         }
       }
-      el.click();
+      clickElement(el);
     } else if (command.action === "fill") {
       if (el.matches("input") && !["text", "search", "email", "url", "tel", "number", ""].includes(el.type)) {
         throw new Error("Тип поля не поддерживается.");
