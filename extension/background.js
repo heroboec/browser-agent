@@ -3,6 +3,7 @@ import { isAllowedUrl, MAX_RESULT_BYTES, parseOrigin, READ_ACTIONS, validateComm
 let inFlight = null;
 let pollTimer = null;
 let pollFailures = 0;
+const pollIntervalMs = 2000;
 const alarmName = "browser-agent-poll";
 const defaults = { enabled: false, confirmChanges: true, relay: "", token: "", origin: "", tabId: null };
 
@@ -156,7 +157,7 @@ function tick() {
       const { config, journal } = await chrome.storage.local.get(["config", "journal"]);
       // Keep delivery retries even after Stop, but never claim new jobs while disabled.
       if (config?.enabled || journal) {
-        pollTimer = setTimeout(() => { void tick(); }, Math.min(30000, 1000 * 2 ** pollFailures));
+        pollTimer = setTimeout(() => { void tick(); }, Math.min(30000, pollIntervalMs * 2 ** pollFailures));
       }
     } finally { inFlight = null; }
   });
@@ -208,4 +209,4 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
 // Restart the fast loop whenever Chrome wakes this service worker.
 // The alarm remains a fallback if Chrome suspends the worker or the computer sleeps.
-pollTimer = setTimeout(() => { void tick(); }, 1000);
+pollTimer = setTimeout(() => { void tick(); }, pollIntervalMs);
