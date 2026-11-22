@@ -63,7 +63,7 @@
     let truncated = false;
     for (const el of document.querySelectorAll(controlSelector)) {
       if (!visible(el) || secretField(el)) continue;
-      if (controls.length >= 300) { truncated = true; break; }
+      if (controls.length >= 500) { truncated = true; break; }
       const id = `e${controls.length + 1}`;
       elements.set(id, el);
       fingerprints.set(id, fingerprint(el));
