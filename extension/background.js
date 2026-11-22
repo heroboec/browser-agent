@@ -142,6 +142,7 @@ function tick() {
   inFlight = poll().catch(async (error) => {
     await chrome.storage.local.set({ lastError: { message: error.message, at: Date.now() } });
     await badge("!");
+    return { error: error.message };
   }).finally(() => { inFlight = null; });
   return inFlight;
 }
@@ -156,7 +157,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("options.html")) return;
   const work = async () => {
     if (message.type === "tick") {
-      await tick();
+      const result = await tick();
+      if (result?.error) throw new Error(result.error);
     } else if (message.type === "configure") {
       if (inFlight) await inFlight;
       const c = message.config;

@@ -1,5 +1,6 @@
 import { parseOrigin, isAllowedUrl } from "./protocol.js";
 import { checkRelease, parseRepository } from "./updates.js";
+import { createFastPoller } from "./fast-poll.js";
 const $ = (id) => document.getElementById(id);
 let approvalId = null;
 
@@ -60,10 +61,24 @@ $("settings").addEventListener("submit", run(async () => {
 $("refresh").addEventListener("click", run(() => tabs()));
 $("origin").addEventListener("change", run(() => tabs()));
 $("poll").addEventListener("click", run(() => send("tick")));
-$("stop").addEventListener("click", run(async () => { await send("stop"); $("enabled").checked = false; }));
+$("stop").addEventListener("click", run(async () => { fastPoller.stop(); await send("stop"); $("enabled").checked = false; }));
 $("approve").addEventListener("click", run(() => send("approve", { id: approvalId })));
 $("reject").addEventListener("click", run(() => send("reject", { id: approvalId })));
 chrome.storage.onChanged.addListener(() => { void render(); });
+
+const fastPoller = createFastPoller({
+  async poll() {
+    const { config, journal } = await chrome.storage.local.get(["config", "journal"]);
+    if (!config?.enabled) { fastPoller.stop(); return; }
+    if (journal?.phase !== "approval") await send("tick");
+  },
+  onStop() { $("fast-poll").checked = false; }
+});
+$("fast-poll").addEventListener("change", () => {
+  if ($("fast-poll").checked) fastPoller.start();
+  else fastPoller.stop();
+});
+window.addEventListener("pagehide", () => fastPoller.stop());
 
 const currentVersion = chrome.runtime.getManifest().version;
 $("current-version").textContent = currentVersion;
