@@ -1,6 +1,8 @@
 import { isAllowedUrl, MAX_RESULT_BYTES, parseOrigin, READ_ACTIONS, validateCommand } from "./protocol.js";
 
 let inFlight = null;
+let pollTimer = null;
+let pollFailures = 0;
 const alarmName = "browser-agent-poll";
 const defaults = { enabled: false, confirmChanges: true, relay: "", token: "", origin: "", tabId: null };
 
@@ -139,11 +141,25 @@ async function poll() {
 
 function tick() {
   if (inFlight) return inFlight;
-  inFlight = poll().catch(async (error) => {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  inFlight = poll().then((result) => {
+    pollFailures = 0;
+    return result;
+  }).catch(async (error) => {
+    pollFailures = Math.min(pollFailures + 1, 5);
     await chrome.storage.local.set({ lastError: { message: error.message, at: Date.now() } });
     await badge("!");
     return { error: error.message };
-  }).finally(() => { inFlight = null; });
+  }).finally(async () => {
+    try {
+      const { config, journal } = await chrome.storage.local.get(["config", "journal"]);
+      // Keep delivery retries even after Stop, but never claim new jobs while disabled.
+      if (config?.enabled || journal) {
+        pollTimer = setTimeout(() => { void tick(); }, Math.min(30000, 1000 * 2 ** pollFailures));
+      }
+    } finally { inFlight = null; }
+  });
   return inFlight;
 }
 
@@ -189,3 +205,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   work().then(respond, (error) => respond({ ok: false, error: error.message }));
   return true;
 });
+
+// Restart the fast loop whenever Chrome wakes this service worker.
+// The alarm remains a fallback if Chrome suspends the worker or the computer sleeps.
+pollTimer = setTimeout(() => { void tick(); }, 1000);
