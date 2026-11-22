@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Agent Relay",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "description": "Управление выбранной вкладкой через личный HTTPS-посредник.",
+  "permissions": ["storage", "alarms", "scripting", "tabs"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Browser Agent — настройки и подтверждения" },
+  "options_page": "options.html"
+}
