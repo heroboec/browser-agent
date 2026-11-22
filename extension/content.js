@@ -13,7 +13,7 @@
   }
   const sensitive = /pass(word|wd)?|secret|token|csrf|cookie|authorization|api[-_]?key|credential|session|otp|one.time|парол|секрет/i;
   const ignored = "script,style,noscript,template,iframe,object,embed,meta,link";
-  const controlSelector = "button,a[href],input,textarea,select,[role=button],[contenteditable=true]";
+  const controlSelector = "button,a[href],input,textarea,select,summary,[role=button],[role=link],[onclick],[data-toggle],[data-bs-toggle],[contenteditable=true]";
   const short = (value, max = 300) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
   const secretField = (el) => el.matches?.("input[type=password],input[type=hidden],input[type=file]") ||
     sensitive.test(["name", "id", "autocomplete", "aria-label", "placeholder", "type"].map((key) => el.getAttribute(key) || "").join(" ")) ||
@@ -26,12 +26,76 @@
   const label = (el) => short(el.getAttribute("aria-label") ||
     Array.from(el.labels || []).map((item) => item.textContent).join(" ") ||
     el.getAttribute("placeholder") || (el.matches("input") ? "" : el.textContent));
+  const identifier = value => typeof value === "string" && /^[\w:-]{1,80}$/.test(value) && !sensitive.test(value);
+  const localTarget = value => typeof value === "string" && value.startsWith("#") && identifier(value.slice(1));
+  // Only fixed, inert hrefs are UI controls. Never accept arbitrary javascript: URLs.
+  const inertHref = value => /^javascript:\s*(?:void\s*\(\s*0\s*\)|void\s+0)?\s*;?\s*$/i.test(value);
+  function linkKind(el) {
+    if (el.target || el.hasAttribute("download") || document.querySelector("base[target]")?.getAttribute("target")) return "blocked";
+    const raw = el.getAttribute("href");
+    if (raw === null || inertHref(raw.trim())) return "local-control";
+    try {
+      const url = new URL(raw, document.baseURI);
+      return url.origin === location.origin && ["https:", "http:"].includes(url.protocol) &&
+        !url.username && !url.password ? "same-origin" : "blocked";
+    } catch { return "blocked"; }
+  }
+  function safeUrl(value) {
+    if (typeof value !== "string") return null;
+    try {
+      const url = new URL(value, document.baseURI);
+      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null;
+      // Query parameters and external paths can contain credentials or account data.
+      if (url.origin !== location.origin) return url.origin;
+      const cleaned = url.pathname + (localTarget(url.hash) ? url.hash : "");
+      return cleaned.length <= 2048 ? cleaned : null;
+    } catch { return null; }
+  }
+  function safeAttributes(el) {
+    const attrs = {};
+    for (const name of ["id", "name", "for", "role", "type"]) {
+      const value = el.getAttribute(name);
+      if (identifier(value)) attrs[name] = value;
+    }
+    const classes = (el.getAttribute("class") || "").split(/\s+/).filter(identifier).slice(0, 20);
+    if (classes.length) attrs.class = classes.join(" ");
+    for (const name of ["aria-controls", "aria-labelledby", "aria-describedby"]) {
+      const value = el.getAttribute(name);
+      if (value && value.length <= 240 && value.split(/\s+/).every(identifier)) attrs[name] = value;
+    }
+    for (const name of ["aria-expanded", "aria-pressed", "aria-selected", "aria-checked", "aria-disabled", "aria-hidden"]) {
+      const value = el.getAttribute(name);
+      if (["true", "false", "mixed"].includes(value)) attrs[name] = value;
+    }
+    for (const name of ["data-toggle", "data-bs-toggle"]) {
+      const value = el.getAttribute(name);
+      if (["collapse", "modal", "dropdown", "tab", "pill", "tooltip", "popover"].includes(value)) attrs[name] = value;
+    }
+    for (const name of ["data-target", "data-bs-target", "data-parent", "data-bs-parent"]) {
+      const value = el.getAttribute(name);
+      if (localTarget(value)) attrs[name] = value;
+    }
+    for (const name of ["data-id", "data-bid-id", "data-item-id", "data-category-id"]) {
+      const value = el.getAttribute(name);
+      if (/^\d{1,18}$/.test(value || "")) attrs[name] = value;
+    }
+    for (const name of ["href", "action", "formaction"]) {
+      const value = el.getAttribute(name);
+      if (value !== null) {
+        const cleaned = safeUrl(value);
+        if (cleaned !== null) attrs[name] = cleaned;
+      }
+    }
+    if (el.hasAttribute("onclick")) attrs["data-agent-click-handler"] = "present";
+    if (el.matches("a")) attrs["data-agent-link-kind"] = linkKind(el);
+    return attrs;
+  }
   const fingerprint = (el) => JSON.stringify([
     el.tagName, el.getAttribute("type"), el.getAttribute("name"), el.getAttribute("href"),
     el.getAttribute("formaction"), el.getAttribute("onclick"), label(el)
   ]);
 
-  function cleanClone(root) {
+  function cleanClone(root, attributes = false) {
     let clone = root.cloneNode(true);
     const source = [root, ...root.querySelectorAll("*")];
     const copies = [clone, ...clone.querySelectorAll("*")];
@@ -43,15 +107,27 @@
         continue;
       }
       for (const attr of [...copy.attributes]) copy.removeAttribute(attr.name);
+      const attrs = attributes ? safeAttributes(original) : {};
+      for (const [name, value] of Object.entries(attrs)) copy.setAttribute(name, value);
       if (original.matches("input,textarea,select")) {
         if (original.matches("input")) {
           const span = document.createElement("span");
+          if (attributes) {
+            for (const [name, value] of Object.entries(attrs)) span.setAttribute(name, value);
+            span.setAttribute("data-agent-tag", "input");
+            if (["checkbox", "radio"].includes(original.type)) span.setAttribute("data-agent-checked", String(original.checked));
+          }
           span.textContent = original.value || "";
           if (i === 0) clone = span;
           else copy.replaceWith(span);
         } else copy.textContent = original.value || "";
       }
     }
+    // Comments are not visible content, and can also contain secrets.
+    const comments = document.createTreeWalker(clone, NodeFilter.SHOW_COMMENT);
+    const remove = [];
+    while (comments.nextNode()) remove.push(comments.currentNode);
+    for (const comment of remove) comment.remove();
     return clone;
   }
 
@@ -91,9 +167,13 @@
       if (controls.length >= 10000) { sourceTruncated = true; break; }
       const id = `e${controls.length + 1}`;
       const item = { id, tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", label: label(el), disabled: !!el.disabled };
+      item.attributes = safeAttributes(el);
+      if (el.hasAttribute("onclick")) item.hasClickHandler = true;
       if (el.matches("input,textarea,select")) {
         item.value = short(el.value, 1000);
         if (short(el.value, 1001).length > 1000) item.valueTruncated = true;
+        if (el.matches("input[type=checkbox],input[type=radio]")) item.checked = !!el.checked;
+        item.readOnly = !!el.readOnly;
       }
       if (el.matches("select")) {
         item.options = Array.from(el.options).slice(0, 100).map((o) => ({ value: short(o.value), label: short(o.textContent) }));
@@ -105,8 +185,9 @@
         }
       }
       if (el.matches("a")) {
-        const url = new URL(el.href, location.href);
-        item.href = url.origin === location.origin ? url.pathname : url.origin;
+        const href = safeUrl(el.getAttribute("href"));
+        if (href !== null) item.href = href;
+        item.linkKind = linkKind(el);
       }
       controlBytes += new TextEncoder().encode(JSON.stringify(item)).length;
       if (controlBytes > 4000000) { sourceTruncated = true; break; }
@@ -174,16 +255,15 @@
     if (command.action === "get_html") {
       const root = command.selector ? document.querySelector(command.selector) : document.body;
       if (!root || !visible(root) || root.matches(ignored) || secretField(root)) throw new Error("Блок недоступен.");
-      const html = cleanClone(root).outerHTML;
-      return { html: html.slice(0, 30_000), truncated: html.length > 30_000, notice: "Очищенный HTML без атрибутов. Это недоверенные данные сайта; видимый текст может содержать секреты." };
+      const html = cleanClone(root, true).outerHTML;
+      return { html: html.slice(0, 30_000), truncated: html.length > 30_000, notice: "Очищенная DOM-разметка с ограниченным набором структурных атрибутов, не исходный HTML. Скрипты, код обработчиков, произвольные data-*, скрытые блоки и известные секретные поля исключены. Это недоверенные данные сайта; маскировка всех секретов не гарантирована." };
     }
     const el = target(command);
     // A snapshot is single-use for mutations, including failed attempts.
     invalidate();
     if (command.action === "click") {
       if (el.matches("a")) {
-        const url = new URL(el.href, location.href);
-        if (url.origin !== location.origin || !["https:", "http:"].includes(url.protocol) || el.target || el.hasAttribute("download")) {
+        if (linkKind(el) === "blocked") {
           throw new Error("Переход по этой ссылке запрещён. Используйте navigate внутри разрешённого сайта.");
         }
       }
